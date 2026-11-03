@@ -1,0 +1,101 @@
+From 2b3fb578d98dccdbaa98c51893e01684f381891f Mon Sep 17 00:00:00 2001
+From: Brandon Thompson <brandon.joseph.thompson@gmail.com>
+Date: Tue, 3 Nov 2026 14:07:52 -0800
+Subject: [PATCH] Report linux to the app bundle on FreeBSD
+
+The bundle only supports win32, darwin and linux and throws
+"Unsupported platform" otherwise. It's signed, so the shell reports
+linux to it: in the main process before the bundle loads, and in
+renderers through a default-session frame preload.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ wowup-shell/scripts/build-shell.js |  2 +-
+ wowup-shell/src/bootstrap.ts       |  2 ++
+ wowup-shell/src/freebsd-compat.ts  | 25 +++++++++++++++++++++++++
+ wowup-shell/src/freebsd-preload.ts |  8 ++++++++
+ 4 files changed, 36 insertions(+), 1 deletion(-)
+ create mode 100644 wowup-shell/src/freebsd-compat.ts
+ create mode 100644 wowup-shell/src/freebsd-preload.ts
+
+diff --git a/wowup-shell/scripts/build-shell.js b/wowup-shell/scripts/build-shell.js
+index 67d3e4a..727c155 100644
+--- a/wowup-shell/scripts/build-shell.js
++++ b/wowup-shell/scripts/build-shell.js
+@@ -65,7 +65,7 @@ async function build() {
+ 
+   await esbuild.build({
+     absWorkingDir: root,
+-    entryPoints: ["src/bootstrap.ts"],
++    entryPoints: ["src/bootstrap.ts", "src/freebsd-preload.ts"],
+     outdir: outDir,
+     bundle: true,
+     platform: "node",
+diff --git a/wowup-shell/src/bootstrap.ts b/wowup-shell/src/bootstrap.ts
+index 49bf1cd..59b8022 100644
+--- a/wowup-shell/src/bootstrap.ts
++++ b/wowup-shell/src/bootstrap.ts
+@@ -9,6 +9,7 @@ import { LoadedBundleInfo, SHELL_API_VERSION, setShell, ShellUpdates } from "../
+ import { BUNDLE_PUBLIC_KEYS } from "./bundle-keys";
+ import { BundleLoaderOptions, markBundleHealthy, selectBundle } from "./bundle-loader";
+ import { BundleUpdater } from "./bundle-updater";
++import { useLinuxPlatform } from "./freebsd-compat";
+ 
+ // The signed shell's entry point. Only what has to happen before, or independently of, the app bundle
+ // belongs here; everything else lives in the bundle's main.ts. See wowup-electron/SHELL_BUNDLE_PLAN.md.
+@@ -45,6 +46,7 @@ if (!app.requestSingleInstanceLock()) {
+     refuseToStart();
+   } else {
+     useShellNodeModules(shellRoot);
++    useLinuxPlatform(shellRoot);
+ 
+     // WowUp Protocol Handler
+     setAsDefaultProtocolClient(WOWUP_PROTOCOL_NAME);
+diff --git a/wowup-shell/src/freebsd-compat.ts b/wowup-shell/src/freebsd-compat.ts
+new file mode 100644
+index 0000000..a58f656
+--- /dev/null
++++ b/wowup-shell/src/freebsd-compat.ts
+@@ -0,0 +1,25 @@
++import { app, session } from "electron";
++import { join } from "path";
++
++// FreeBSD port. The app bundle only knows win32, darwin and linux (it refuses to start otherwise), and on
++// FreeBSD everything it does matches linux: unix paths, WoW running under wine. The bundle is signed and
++// can't be patched, so the shell reports linux to it, in the main process here and in every renderer
++// through a session preload that runs before the bundle's own preload.
++
++export const FREEBSD_PRELOAD = "freebsd-preload.js";
++
++export function useLinuxPlatform(shellRoot: string): void {
++  if (process.platform !== "freebsd") {
++    return;
++  }
++
++  Object.defineProperty(process, "platform", { value: "linux" });
++
++  // Attached before the bundle is loaded, so it runs before the bundle's own ready listener creates the window
++  app.on("ready", () => {
++    session.defaultSession.registerPreloadScript({
++      type: "frame",
++      filePath: join(shellRoot, "dist", FREEBSD_PRELOAD),
++    });
++  });
++}
+diff --git a/wowup-shell/src/freebsd-preload.ts b/wowup-shell/src/freebsd-preload.ts
+new file mode 100644
+index 0000000..00b7c1c
+--- /dev/null
++++ b/wowup-shell/src/freebsd-preload.ts
+@@ -0,0 +1,8 @@
++// FreeBSD port: see freebsd-compat.ts. Runs in every frame of the default session before the bundle's preload.
++if (process.platform === "freebsd") {
++  try {
++    Object.defineProperty(process, "platform", { value: "linux" });
++  } catch {
++    // Sandboxed frames (the ad webview) have a reduced process object; they don't check the platform
++  }
++}
+-- 
+2.56.0
+
