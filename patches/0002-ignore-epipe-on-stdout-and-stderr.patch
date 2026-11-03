@@ -1,0 +1,41 @@
+From 98093b58042035b42a7896e7f521ccee28b8c940 Mon Sep 17 00:00:00 2001
+From: Brandon Thompson <brandon.joseph.thompson@gmail.com>
+Date: Tue, 3 Nov 2026 14:16:35 -0800
+Subject: [PATCH] Ignore EPIPE on stdout and stderr
+
+When the app's stdout/stderr pipe is closed, a console write raises
+EPIPE as an uncaughtException. The bundle's handler logs it to the
+console, which raises EPIPE again, so the main process spins at 100%
+CPU and stops responding (e.g. installs stuck at Downloading).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ wowup-shell/src/bootstrap.ts | 12 ++++++++++++
+ 1 file changed, 12 insertions(+)
+
+diff --git a/wowup-shell/src/bootstrap.ts b/wowup-shell/src/bootstrap.ts
+index 59b8022..35f5ebf 100644
+--- a/wowup-shell/src/bootstrap.ts
++++ b/wowup-shell/src/bootstrap.ts
+@@ -28,6 +28,18 @@ log.transports.file.resolvePathFn = (variables) => {
+   return join(LOG_PATH, variables.fileName ?? "log-file.txt");
+ };
+ 
++// Once whatever reads stdout/stderr goes away (the terminal or launcher that started the app), every console
++// write fails with EPIPE. Unhandled, that's an uncaughtException, which the bundle logs, to the console too,
++// which fails again: the main process spins forever and stops responding. The console only mirrors the log
++// file, so drop the write instead.
++for (const stream of [process.stdout, process.stderr]) {
++  stream.on("error", (e: NodeJS.ErrnoException) => {
++    if (e.code !== "EPIPE") {
++      throw e;
++    }
++  });
++}
++
+ // Only allow one instance of the app to run at a time. The running instance gets a second-instance event,
+ // handled in main.ts, and focuses its window.
+ // Adapted from https://github.com/electron/electron/blob/master/docs/api/app.md#apprequestsingleinstancelock
+-- 
+2.56.0
+
